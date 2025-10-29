@@ -34,7 +34,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializar DocumentConverter con configuración optimizada
+# --- INICIO DE LA CORRECCIÓN ---
+# Inicializar DocumentConverter con configuración actualizada para la nueva versión
 try:
     converter = DocumentConverter(
         allowed_formats=[
@@ -48,12 +49,9 @@ try:
         ],
         format_options={
             InputFormat.PDF: PdfFormatOption(
-                pipeline_options={
-                    "do_ocr": True,
-                    "do_table_structure": True,
-                    "images_scale": 2.0,
-                    "generate_page_images": False,
-                }
+                # Las opciones ahora se pasan directamente, sin el diccionario "pipeline_options"
+                do_ocr=True,
+                do_table_structure=True
             )
         }
     )
@@ -61,6 +59,7 @@ try:
 except Exception as e:
     logger.error(f"Error inicializando DocumentConverter: {e}")
     converter = None
+# --- FIN DE LA CORRECCIÓN ---
 
 @app.get("/")
 async def root():
