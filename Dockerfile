@@ -1,15 +1,17 @@
+# Usa una imagen base de Python 3.11 slim, compatible con ARM64
 FROM python:3.11-slim-bookworm
 
-# Metadatos
-LABEL maintainer="tu-email@ejemplo.com"
-LABEL description="Docling API - Versión oficial desde PyPI"
+# Metadatos de la imagen
+LABEL maintainer="Gusperz2"
+LABEL description="API para Docling - Despliegue en Coolify"
 
-# Variables de entorno
+# Variables de entorno para optimizar Python
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
-# Instalar dependencias del sistema
+# Instala las dependencias del sistema operativo necesarias para Docling
+# Se incluye Tesseract para OCR en español e inglés y curl para el healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -19,37 +21,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-spa \
     tesseract-ocr-eng \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Crear directorio de trabajo
+# Establece el directorio de trabajo dentro del contenedor
 WORKDIR /app
 
-# Instalar Docling y dependencias desde PyPI (versión oficial)
+# Actualiza pip e instala las librerías de Python más recientes y compatibles
+# Se instala la última versión de docling que resuelve las dependencias internas
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-    docling==2.0.0 \
-    fastapi==0.115.0 \
-    uvicorn[standard]==0.31.0 \
-    python-multipart==0.0.9
+    "docling[pdf,ocr,docx,pptx]" \
+    "fastapi" \
+    "uvicorn[standard]" \
+    "python-multipart"
 
-# Copiar código de la aplicación
+# Copia el código de la aplicación al directorio de trabajo
 COPY app.py .
 
-# Crear usuario no-root y directorios necesarios
+# Crea un usuario no-root llamado "docling" por seguridad
+# Crea y asigna permisos a los directorios que usará la aplicación
 RUN useradd -m -u 1000 docling && \
     mkdir -p /tmp/docling && \
     chown -R docling:docling /app /tmp/docling
 
-# Cambiar a usuario no-root
+# Cambia al usuario no-root
 USER docling
 
-# Exponer puerto
+# Expone el puerto 8000 para que la API sea accesible
 EXPOSE 8000
 
-# Health check
+# Define un chequeo de salud para que Coolify sepa si la aplicación está funcionando
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Comando de inicio
+# Comando final para iniciar el servidor de la aplicación con Uvicorn
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
