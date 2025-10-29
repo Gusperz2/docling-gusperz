@@ -8,6 +8,10 @@ import tempfile
 import os
 import logging
 from typing import Optional
+# --- INICIO DE CAMBIOS ---
+import pandas as pd
+import io
+# --- FIN DE CAMBIOS ---
 
 # Configurar logging
 logging.basicConfig(
@@ -19,8 +23,8 @@ logger = logging.getLogger(__name__)
 # Crear aplicación FastAPI
 app = FastAPI(
     title="Docling API",
-    description="API para procesamiento de documentos con Docling (versión oficial)",
-    version="1.0.0",
+    description="API para procesamiento de documentos con Docling y soporte para Excel",
+    version="1.2.0", # <-- VERSIÓN ACTUALIZADA
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -34,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- INICIO DE LA CORRECCIÓN ---
+# --- INICIO DE CAMBIOS ---
 # Inicializar DocumentConverter con configuración actualizada para la nueva versión
 try:
     converter = DocumentConverter(
@@ -59,7 +63,7 @@ try:
 except Exception as e:
     logger.error(f"Error inicializando DocumentConverter: {e}")
     converter = None
-# --- FIN DE LA CORRECCIÓN ---
+# --- FIN DE CAMBIOS ---
 
 @app.get("/")
 async def root():
@@ -67,15 +71,15 @@ async def root():
     return {
         "status": "healthy",
         "service": "Docling API",
-        "version": "1.0.0",
-        "docling_version": "2.0.0",
+        "version": "1.2.0", # <-- VERSIÓN ACTUALIZADA
         "architecture": "ARM64 compatible",
         "endpoints": {
             "health": "GET /health",
             "docs": "GET /docs",
             "process": "POST /api/process",
             "process_rag": "POST /api/process-rag",
-            "extract_tables": "POST /api/extract-tables"
+            "extract_tables": "POST /api/extract-tables",
+            "process_excel": "POST /api/process-excel" # <-- ENDPOINT NUEVO
         }
     }
 
@@ -113,10 +117,8 @@ async def process_document(
     try:
         logger.info(f"Procesando archivo: {file.filename}")
         
-        # Leer contenido del archivo
         content = await file.read()
         
-        # Validar tamaño (máx 50MB)
         file_size_mb = len(content) / (1024 * 1024)
         if file_size_mb > 50:
             raise HTTPException(
@@ -124,7 +126,6 @@ async def process_document(
                 detail=f"Archivo muy grande ({file_size_mb:.1f}MB). Máximo: 50MB"
             )
         
-        # Guardar archivo temporal
         suffix = os.path.splitext(file.filename)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir="/tmp/docling") as tmp:
             tmp.write(content)
@@ -132,105 +133,44 @@ async def process_document(
         
         logger.info(f"Archivo guardado en: {tmp_path} ({file_size_mb:.2f}MB)")
         
-        # Convertir documento
         result = converter.convert(tmp_path)
         doc = result.document
         
-        # Extraer elementos del documento
-        chunks = []
-        tables = []
-        images = []
-        
+        chunks, tables, images = [], [], []
         for idx, element in enumerate(doc.iterate_items()):
-            # Crear chunk básico
             chunk = {
-                "chunk_id": f"{file.filename}_{idx}",
-                "text": element.text,
-                "type": element.label,
-                "metadata": {
-                    "filename": file.filename,
-                    "chunk_index": idx,
-                    "element_type": element.label
-                }
+                "chunk_id": f"{file.filename}_{idx}", "text": element.text, "type": element.label,
+                "metadata": {"filename": file.filename, "chunk_index": idx, "element_type": element.label}
             }
-            
-            # Agregar información de página y coordenadas
             if element.prov:
                 prov = element.prov[0]
                 chunk["metadata"]["page"] = prov.page
-                
-                if prov.bbox:
-                    chunk["metadata"]["bbox"] = {
-                        "x0": prov.bbox.l,
-                        "y0": prov.bbox.t,
-                        "x1": prov.bbox.r,
-                        "y1": prov.bbox.b
-                    }
-            
             chunks.append(chunk)
-            
-            # Extraer tablas por separado si se solicita
             if extract_tables and "table" in element.label.lower():
-                table_data = {
-                    "page": chunk["metadata"].get("page"),
-                    "text": element.text,
-                    "bbox": chunk["metadata"].get("bbox")
-                }
-                tables.append(table_data)
-            
-            # Extraer imágenes por separado si se solicita
+                tables.append({"page": chunk["metadata"].get("page"), "text": element.text})
             if extract_images and "picture" in element.label.lower():
-                image_data = {
-                    "page": chunk["metadata"].get("page"),
-                    "caption": element.text,
-                    "bbox": chunk["metadata"].get("bbox")
-                }
-                images.append(image_data)
+                images.append({"page": chunk["metadata"].get("page"), "caption": element.text})
         
-        # Metadatos del documento completo
         metadata = {
-            "filename": file.filename,
-            "file_size_mb": round(file_size_mb, 2),
-            "file_type": suffix[1:] if suffix else "unknown",
-            "total_pages": len(doc.pages),
-            "total_chunks": len(chunks),
-            "total_tables": len(tables),
-            "total_images": len(images)
+            "filename": file.filename, "file_size_mb": round(file_size_mb, 2),
+            "total_pages": len(doc.pages), "total_chunks": len(chunks),
+            "total_tables": len(tables), "total_images": len(images)
         }
         
         logger.info(f"Procesamiento exitoso: {len(chunks)} chunks, {len(tables)} tablas")
         
-        response = {
-            "success": True,
-            "metadata": metadata,
-            "chunks": chunks
-        }
-        
-        if extract_tables and tables:
-            response["tables"] = tables
-        
-        if extract_images and images:
-            response["images"] = images
+        response = {"success": True, "metadata": metadata, "chunks": chunks}
+        if tables: response["tables"] = tables
+        if images: response["images"] = images
         
         return JSONResponse(content=response)
     
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error procesando documento: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error procesando documento: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
     
     finally:
-        # Limpiar archivo temporal
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-                logger.info(f"Archivo temporal eliminado: {tmp_path}")
-            except Exception as e:
-                logger.warning(f"No se pudo eliminar archivo temporal: {e}")
+            os.unlink(tmp_path)
 
 @app.post("/api/process-rag")
 async def process_for_rag(
@@ -241,116 +181,45 @@ async def process_for_rag(
 ):
     """
     Procesa un documento y genera chunks optimizados para RAG
-    
-    Args:
-        file: Archivo a procesar
-        chunk_size: Tamaño máximo de tokens por chunk
-        chunk_overlap: Tokens de solapamiento entre chunks
-        merge_peers: Si debe unir elementos relacionados
-    
-    Returns:
-        Chunks optimizados para embeddings y vector store
     """
     if converter is None:
         raise HTTPException(status_code=503, detail="Converter no inicializado")
     
     tmp_path = None
     try:
-        logger.info(f"Procesando para RAG: {file.filename}")
-        
-        # Leer y validar archivo
         content = await file.read()
-        file_size_mb = len(content) / (1024 * 1024)
-        
-        if file_size_mb > 50:
+        if len(content) / (1024 * 1024) > 50:
             raise HTTPException(status_code=413, detail="Archivo muy grande (máx 50MB)")
         
-        # Guardar temporal
         suffix = os.path.splitext(file.filename)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir="/tmp/docling") as tmp:
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Convertir documento
         result = converter.convert(tmp_path)
         doc = result.document
+        chunker = HybridChunker(max_tokens=chunk_size, overlap=chunk_overlap, merge_peers=merge_peers)
         
-        # Crear chunker híbrido (respeta estructura semántica)
-        chunker = HybridChunker(
-            max_tokens=chunk_size,
-            overlap=chunk_overlap,
-            merge_peers=merge_peers
-        )
-        
-        # Generar chunks
         rag_chunks = []
         for idx, chunk in enumerate(chunker.chunk(doc)):
-            # Extraer páginas únicas
-            pages = set()
-            element_types = set()
-            has_table = False
-            has_figure = False
-            
-            for element in chunk.meta.doc_items:
-                if element.prov:
-                    pages.add(element.prov[0].page)
-                
-                element_type = element.label.lower()
-                element_types.add(element.label)
-                
-                if "table" in element_type:
-                    has_table = True
-                if "figure" in element_type or "picture" in element_type:
-                    has_figure = True
-            
+            pages = sorted(list(set(p.prov[0].page for p in chunk.meta.doc_items if p.prov)))
+            element_types = list(set(e.label for e in chunk.meta.doc_items))
             rag_chunk = {
-                "chunk_id": f"{file.filename}_rag_{idx}",
-                "text": chunk.text,
-                "metadata": {
-                    "filename": file.filename,
-                    "chunk_index": idx,
-                    "pages": sorted(list(pages)),
-                    "element_types": list(element_types),
-                    "has_table": has_table,
-                    "has_figure": has_figure,
-                    "token_count": len(chunk.text.split())  # Aproximado
-                }
+                "chunk_id": f"{file.filename}_rag_{idx}", "text": chunk.text,
+                "metadata": {"filename": file.filename, "chunk_index": idx, "pages": pages, "element_types": element_types}
             }
-            
             rag_chunks.append(rag_chunk)
         
-        metadata = {
-            "filename": file.filename,
-            "file_size_mb": round(file_size_mb, 2),
-            "total_pages": len(doc.pages),
-            "total_chunks": len(rag_chunks),
-            "chunking_config": {
-                "max_tokens": chunk_size,
-                "overlap": chunk_overlap,
-                "merge_peers": merge_peers
-            }
-        }
+        metadata = {"filename": file.filename, "total_pages": len(doc.pages), "total_chunks": len(rag_chunks)}
         
-        logger.info(f"RAG chunks generados: {len(rag_chunks)}")
-        
-        return JSONResponse(content={
-            "success": True,
-            "metadata": metadata,
-            "chunks": rag_chunks
-        })
+        return JSONResponse(content={"success": True, "metadata": metadata, "chunks": rag_chunks})
     
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error en process-rag: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
+            os.unlink(tmp_path)
 
 @app.post("/api/extract-tables")
 async def extract_tables_only(file: UploadFile = File(...)):
@@ -364,7 +233,6 @@ async def extract_tables_only(file: UploadFile = File(...)):
     try:
         content = await file.read()
         suffix = os.path.splitext(file.filename)[1].lower()
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir="/tmp/docling") as tmp:
             tmp.write(content)
             tmp_path = tmp.name
@@ -375,45 +243,53 @@ async def extract_tables_only(file: UploadFile = File(...)):
         tables = []
         for page in doc.pages:
             for table in page.tables:
-                table_data = {
-                    "page": page.page_no,
-                    "text": table.text,
-                    "bbox": None
-                }
-                
-                if table.prov:
-                    prov = table.prov[0]
-                    if prov.bbox:
-                        table_data["bbox"] = {
-                            "x0": prov.bbox.l,
-                            "y0": prov.bbox.t,
-                            "x1": prov.bbox.r,
-                            "y1": prov.bbox.b
-                        }
-                
-                # Intentar obtener estructura de tabla
-                if hasattr(table, 'data') and table.data:
-                    table_data["structure"] = table.data
-                
-                tables.append(table_data)
+                tables.append({"page": page.page_no, "text": table.text})
         
-        return JSONResponse(content={
-            "success": True,
-            "filename": file.filename,
-            "total_tables": len(tables),
-            "tables": tables
-        })
+        return JSONResponse(content={"success": True, "filename": file.filename, "total_tables": len(tables), "tables": tables})
     
     except Exception as e:
-        logger.error(f"Error extrayendo tablas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
+            os.unlink(tmp_path)
+
+# --- INICIO DE CAMBIOS ---
+@app.post("/api/process-excel")
+async def process_excel_for_rag(file: UploadFile = File(...)):
+    """
+    Procesa un archivo de Excel (XLSX, XLS) y genera chunks de texto por cada fila para RAG.
+    """
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .xlsx o .xls")
+    
+    try:
+        logger.info(f"Procesando archivo Excel para RAG: {file.filename}")
+        
+        content = await file.read()
+        df = pd.read_excel(io.BytesIO(content))
+        
+        rag_chunks = []
+        for idx, row in df.iterrows():
+            row_text = ", ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+            if not row_text:
+                continue
+            rag_chunk = {
+                "chunk_id": f"{file.filename}_row_{idx}", "text": row_text,
+                "metadata": {"filename": file.filename, "row": idx + 2}
+            }
+            rag_chunks.append(rag_chunk)
+            
+        metadata = {"filename": file.filename, "total_rows": len(df), "total_chunks": len(rag_chunks)}
+        
+        logger.info(f"Excel RAG chunks generados: {len(rag_chunks)}")
+        
+        return JSONResponse(content={"success": True, "metadata": metadata, "chunks": rag_chunks})
+
+    except Exception as e:
+        logger.error(f"Error en process-excel: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error procesando el archivo Excel: {str(e)}")
+# --- FIN DE CAMBIOS ---
 
 if __name__ == "__main__":
     import uvicorn
